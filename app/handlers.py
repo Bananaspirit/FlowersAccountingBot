@@ -1,12 +1,12 @@
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import InputFile, FSInputFile
 import app.keyboards as kb
-from app.database.create_users_db import is_table_empty, create_admin
+from app.database.create_users_db import is_table_empty, create_admin, get_user_role, get_list_of_admins
 from config import ADMIN_PASSWORD
 
 router = Router()
@@ -19,11 +19,17 @@ class CreateAdmin(StatesGroup):
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     if is_table_empty("users"):
-        await message.answer("Поздравляем! Вы можете стать первым админом бота если введете пароль!")
+        await message.answer("Поздравляем! Вы можете стать первым админом бота если пришлете верный пароль!")
         await state.set_state(CreateAdmin.waiting_for_password)
     else:
-        await message.answer("Привет! Я ваше персональное телеграм-приложение для бухгалтерского учета.",
-                             reply_markup=await kb.reply_cars())
+        if get_user_role(message.from_user.id) == "admin":
+            await message.answer("Добро пожаловать! Вы уже админ")
+        elif get_user_role(message.from_user.id) == "user":
+            await message.answer("Добро пожаловать! Вы уже юзер")
+        else:
+            await message.answer(f"""Добро пожаловать! Нажмите на ваш id чтобы скопировать: <code>{message.from_user.id}</code>, 
+                                 сообщите его админу для назначения вам роли""",
+                                 reply_markup=kb.unknown_user_kb)
     
 # State handler for the password input
 @router.message(CreateAdmin.waiting_for_password)
@@ -59,6 +65,12 @@ async def vladochka(message: Message):
 @router.message(Command("get_user_info"))
 async def get_user_info(message: Message):
     await message.reply(f"Привет!\nТвой ID: {message.from_user.id}\nТвое имя: {message.from_user.full_name}")
+
+# хэндлеры для обработки коллбэков
+@router.callback_query(F.data == "admins_list")
+async def admins_list(callback: CallbackQuery):
+    await callback.answer("")
+    await callback.message.answer("Выберите админа", reply_markup=await kb.inline_admins())
 
 # Echo handler
 # @router.message(F.text)
