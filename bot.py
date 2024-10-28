@@ -4,8 +4,9 @@ from config import BOT_TOKEN
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums.parse_mode import ParseMode
 from aiogram import Bot, Dispatcher
-from app.handlers import router
-from app.database.create_users_db import init_db
+from app.handlers.main_handlers import router
+from app.database.users_db import init_db
+from access_middleware import AccessMiddleware
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -13,6 +14,7 @@ dp = Dispatcher()
 init_db()
 
 async def main():
+    dp.message.middleware(AccessMiddleware())
     dp.include_router(router)
 
     try:

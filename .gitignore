@@ -1,3 +1,4 @@
 .env
 FlowersAccBotVenv
 __pycache__
+bot_users.db
