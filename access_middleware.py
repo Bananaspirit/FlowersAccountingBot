@@ -1,27 +1,77 @@
 from aiogram import BaseMiddleware
-from aiogram.types import Message
-from typing import Callable, Dict, Any, Awaitable
-from app.database import users_db
-import app.keyboards as kb
+from aiogram.types import Message, CallbackQuery
+from typing import Callable, Dict, Any, Awaitable, Union
+import app.keyboards.main as mainkb
+from functools import wraps
+from aiogram.types import TelegramObject
+
+from app.database.manager import DatabaseManager
+from app.database import user_requests as rq
+
+def role_required(allowed_roles):
+    def decorator(func):
+        async def wrapper(event, *args, **kwargs):
+            user_role = kwargs.get("user_role")
+            if user_role not in allowed_roles:
+                if hasattr(event, "answer"):
+                    await event.answer("У вас нет прав на использование данной команды.", show_alert=True)
+                elif hasattr(event, "reply"):
+                    await event.answer("У вас нет прав на использование данной команды.", show_alert=True)
+                return
+            return await func(event, *args, **kwargs)
+        return wrapper
+    return decorator
 
 class AccessMiddleware(BaseMiddleware):
-    async def __call__(self, handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]], event: Message, data: Dict[str, Any]):
-        user_id = event.from_user.id
-        if users_db.is_table_empty("users"):
-            users_db.add_unknown_user_if_not_exists(user_id, event.from_user.full_name)
-            users_db.set_user_role(user_id, "first")
-        else:
-            users_db.add_unknown_user_if_not_exists(user_id, event.from_user.full_name)
+    def __init__(self, db_manager: DatabaseManager):
+        super().__init__()
+        self.db_manager = db_manager
 
-        # Блокировка пользователя если админ назначил ему роль "deleted"
-        if not users_db.is_table_empty and users_db.get_user_role(user_id) == "deleted":
-            # Notify user about restricted access
-            await event.answer("Вам заблокирован доступ к боту. "
-                               "Если это произошло по ошибке, свяжитесь с администратором. "
-                               f"Вот ваш Telegram ID, нажмите на него чтобы скопировать: <code>{user_id}</code>, "
-                               "он понадобится для восстановления доступа к боту.",
-                               reply_markup=kb.unknown_user_kb)
-            return  # Stop further handling
+    async def __call__(self, handler, event: Union[Message, CallbackQuery], data: dict):
+        tg_id = event.from_user.id
+        user_name = event.from_user.full_name
 
-        # Proceed to the handler if the user exists in the database
-        return await handler(event, data)
+        # user_session = await self.db_manager.get_user_session()
+        data_session = await self.db_manager.get_data_session()
+        data['data_session'] = data_session
+        
+        try:
+        # async with await self.db_manager.get_user_session() as session:
+            # async with user_session.begin():
+            async with self.db_manager.get_user_session() as user_session:
+                # Проверка если пользователь первый
+                if not await rq.get_list_of_admins(user_session):
+                    if await rq.ensure_user_exist(user_session, tg_id) is None:
+                        await rq.add_unknown_user(user_session, tg_id, user_name)
+                        await rq.set_user_role(user_session, tg_id, "first")
+                else:
+                    if await rq.ensure_user_exist(user_session, tg_id) is None:
+                        await rq.add_unknown_user(user_session, tg_id, user_name)
+
+                user_role = await rq.get_user_role(user_session, tg_id)
+
+                # Блокировка пользователя если админ назначил ему роль "deleted"
+                # if user_role == "deleted":
+                #     if isinstance(event, Message):
+                #         await event.answer("Вам заблокирован доступ к боту. "
+                #                            "Если это произошло по ошибке, свяжитесь с администратором.\n"
+                #                            f"Вот ваш Telegram ID, нажмите на него чтобы скопировать: <code>{tg_id}</code>, "
+                #                            "он понадобится для восстановления доступа к боту.",
+                #                            reply_markup=mainkb.unknown_user)
+                #     elif isinstance(event, CallbackQuery):
+                #         await event.message.answer("Вам заблокирован доступ к боту. "
+                #                                    "Если это произошло по ошибке, свяжитесь с администратором.\n"
+                #                                    f"Вот ваш Telegram ID, нажмите на него чтобы скопировать: <code>{tg_id}</code>, "
+                #                                    "он понадобится для восстановления доступа к боту.",
+                #                                    reply_markup=mainkb.unknown_user)
+                #     return
+
+                data["db_manager"] = self.db_manager
+                data['user_session'] = user_session
+                data['user_role'] = user_role
+            
+            # async with data_session.begin():
+            return await handler(event, data)
+        finally:
+            await user_session.close()
+            await data_session.close()

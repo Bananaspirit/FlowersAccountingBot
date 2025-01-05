@@ -5,4 +5,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-DB_PATH = os.getenv("DB_PATH")
+
+USERS_BASE_DIR = os.getenv("USERS_BASE_DIR")
+DATA_BASE_DIR = os.getenv("DATA_BASE_DIR")
