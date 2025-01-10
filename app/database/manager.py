@@ -1,10 +1,11 @@
 import os
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from .models import UserBase, DataBase
-from datetime import datetime
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from . import data_requests as drq
 
 class DatabaseManager:
     def __init__(self, user_base_dir: str, data_base_dir: str):
@@ -19,20 +20,13 @@ class DatabaseManager:
         self.user_sessionmaker: async_sessionmaker[AsyncSession] = sessionmaker(
             bind=self.user_engine, class_=AsyncSession, expire_on_commit=False
         )
+        self.current_data_db_path = None
         self.active_sessions = {"user": [], "data": []}
-        self._data_engines = {}
     
-    # async def get_user_session(self):
-    #     session = self.user_sessionmaker()
-    #     self.active_sessions["user"].append(session)
-    #     return session
-    @asynccontextmanager
     async def get_user_session(self):
-        async with self.user_sessionmaker() as session:
-            try:
-                yield session
-            finally:
-                await session.close()
+        session = self.user_sessionmaker()
+        self.active_sessions["user"].append(session)
+        return session
 
     async def cleanup_sessions(self):
         """Close all active sessions."""
@@ -57,63 +51,75 @@ class DatabaseManager:
         async with self.user_engine.begin() as conn:
             await conn.run_sync(UserBase.metadata.drop_all)
 
-    def get_data_db_path(self,) -> str:
+    def get_data_db_path(self, previous = False) -> str:
         """Generates the path to the database for the specified year and month."""
-        months = {1: "January",
-              2: "February",
-              3: "March",
-              4: "April",
-              5: "May",
-              6: "June",
-              7: "July",
-              8: "August",
-              9: "September",
-              10: "October",
-              11: "November",
-              12: "December"
-              }
+        
         now = datetime.now()
-        year = str(now.year)
-        month = f"{months[now.month]}"
+        if not previous:
+            year = str(now.year)
+            month = f"{now.strftime('%B')}"
 
-        month_dir = os.path.join(self.data_base_dir, year, month)
-        os.makedirs(month_dir, exist_ok=True)
+            month_dir = os.path.join(self.data_base_dir, year, month)
+            os.makedirs(month_dir, exist_ok=True)
+        else:
+            first_day_of_current_month = datetime(year=now.year, month=now.month, day=1)
+            last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
 
-        return month_dir
+            year = str(last_day_of_previous_month.year)
+            month = f"{last_day_of_previous_month.strftime('%B')}"
 
-    # def get_data_engine(self):
-    #     """Creates an engine for the specified year/month database."""
+            month_dir = os.path.join(self.data_base_dir, year, month)
 
-    #     data_db_path = self.get_data_db_path()
+        return os.path.join(month_dir, "data.sqlite3")
+    
+    def database_exists(self, db_path):
+        """Check if a database file exists."""
+        return os.path.exists(db_path)
 
-    #     return create_async_engine(f"sqlite+aiosqlite:///{data_db_path}/data.sqlite3")
-    def get_data_engine(self):
-        data_db_path = self.get_data_db_path()
-        if data_db_path not in self._data_engines:
-            self._data_engines[data_db_path] = create_async_engine(f"sqlite+aiosqlite:///{data_db_path}/data.sqlite3")
-        return self._data_engines[data_db_path]
-
-    async def create_data_db(self):
-        """Creates the database for the specified year and month."""
-
-        engine = self.get_data_engine()
-        async with engine.begin() as conn:
-            await conn.run_sync(DataBase.metadata.create_all)
-
+    def create_data_engine(self, db_path: str):
+        """Creates an engine for a given database path."""
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
         return engine
 
-    # async def get_data_sessionmaker(self):
-    #     """Returns a sessionmaker for the specified year/month database."""
+    async def create_data_db(self, engine: AsyncEngine):
+        """Creates tables in the specified database."""
 
-    #     engine = self.get_data_engine()
-    #     data_sessionmaker: async_sessionmaker[AsyncSession] = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(DataBase.metadata.create_all)
+    
+    async def migrate_to_new_month(self):
+        """Handles database migration when a new month begins."""
 
-    #     return data_sessionmaker
+        new_data_db_path = self.get_data_db_path()
+        prev_data_db_path = self.get_data_db_path(previous=True)
+
+        # Migration logic
+        if not self.database_exists(new_data_db_path):
+            new_engine = self.create_data_engine(new_data_db_path)
+            await self.create_data_db(new_engine)
+
+            if self.database_exists(prev_data_db_path):
+                old_engine = self.create_data_engine(prev_data_db_path)
+                async with old_engine.connect() as old_conn, new_engine.connect() as new_conn:
+
+                    if not await drq.is_migrations_ready(new_conn):
+                        # async with new_conn.begin() as trans: # rollback в случае неудачи
+                        result = await drq.migrate_data(old_conn, new_conn)
+                        if result:
+                            await drq.mark_migrations_is_ready(new_conn)
+
+            self.current_data_db_path = new_data_db_path
+        else:
+            self.current_data_db_path = new_data_db_path
+
     async def get_data_sessionmaker(self):
-        engine = self.get_data_engine()
-        if not hasattr(self, "_data_sessionmaker"):
-            self._data_sessionmaker = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
-        return self._data_sessionmaker
+        """Returns a sessionmaker for the specified year/month database."""
+        await self.migrate_to_new_month()
+
+        engine = self.create_data_engine(self.current_data_db_path)
+        data_sessionmaker: async_sessionmaker[AsyncSession] = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+        return data_sessionmaker
     
     async def get_data_session(self):
         session_instance = await self.get_data_sessionmaker()
@@ -122,7 +128,9 @@ class DatabaseManager:
         return session
     
     async def drop_data_db(self):
-        """Deletes the data database."""
-
-        async with self.get_data_engine().begin() as conn:
-            await conn.run_sync(DataBase.metadata.drop_all)
+        """Deletes the current data database."""
+        new_data_db_path = self.get_data_db_path()
+        if self.database_exists(new_data_db_path):
+            engine = self.create_data_engine(new_data_db_path)
+            async with engine.begin() as conn:
+                await conn.run_sync(DataBase.metadata.drop_all)

@@ -1,8 +1,11 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
 
-from sqlalchemy import Integer, Boolean, ForeignKey, Text, Date, Float
+from sqlalchemy import Integer, Boolean, ForeignKey, Text, Date, DateTime, Float
 from sqlalchemy.orm import relationship
+from sqlalchemy import UniqueConstraint
+
+from datetime import datetime, date
 
 class UserBase(AsyncAttrs, DeclarativeBase):
     pass
@@ -18,14 +21,22 @@ class User(UserBase):
     role: Mapped[str] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
 
+class MigrationStatus(DataBase):
+    __tablename__ = 'migration_status'
+
+    status: Mapped[str] = mapped_column(Text, primary_key=True)
+    date: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
 class Invoice(DataBase):
     __tablename__ = "invoices"
 
     number: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
-    date: Mapped[str] = mapped_column(Date, primary_key=True, nullable=False)
+    invoice_date: Mapped[date] = mapped_column(Date, primary_key=True, nullable=False)
     delivery_cost: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
 
     products: Mapped[list["Product"]] = relationship("Product", back_populates="invoice")
+
+    __table_args__ = (UniqueConstraint("number", "invoice_date", name="uix_number_date"),)
 
 class Product(DataBase):
     __tablename__ = "products"
@@ -64,7 +75,6 @@ class Composition(DataBase):
     __tablename__ = "compositions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
-    composition_id: Mapped[int] = mapped_column(Integer, nullable=False)
     product_id: Mapped[int] = mapped_column(Integer, ForeignKey("products.id"), nullable=False)
     sold_pieces: Mapped[int] = mapped_column(Integer, nullable=False)
     sale_price: Mapped[float] = mapped_column(Float, nullable=False)

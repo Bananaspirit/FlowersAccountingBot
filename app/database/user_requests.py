@@ -11,7 +11,7 @@ async def ensure_user_exist(session: AsyncSession, tg_id: int):
 async def add_unknown_user(session: AsyncSession, tg_id: int, name: str):
     """Add a user if they do not exist."""
     stmt = insert(User).values(tg_id=tg_id, name=name)
-    session.execute(stmt)
+    await session.execute(stmt)
     await session.commit()
 
 async def create_first_admin(session: AsyncSession, tg_id: int):

@@ -1,30 +1,234 @@
 from sqlalchemy.sql import func
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection, AsyncTransaction
 from sqlalchemy import select, update, insert, and_
-from .models import Invoice, Product, Statistic, Composition
-from datetime import date
+from sqlalchemy.orm import selectinload, joinedload
+from .models import Invoice, Product, Statistic, Composition, MigrationStatus, OtherExpense
+from datetime import date, datetime
+from sqlalchemy.dialects.postgresql import dialect
+
+async def is_migrations_ready(conn: AsyncConnection):
+    result = await conn.execute(
+        select(MigrationStatus)
+        .where(MigrationStatus.status == "completed")
+    )
+    migration_status = result.scalar_one_or_none()
+    return migration_status is not None
+
+async def mark_migrations_is_ready(conn: AsyncConnection):
+    await conn.execute(
+        insert(MigrationStatus)
+        .values(status="completed", date=datetime.now())
+    )
+    await conn.commit()
+
+# Migrate data
+async def migrate_data(old_conn: AsyncConnection, new_conn: AsyncConnection):
+    """
+    Migrate data from a table in the old database to the new database.
+    """
+    old_result = await old_conn.execute(
+        select(Statistic, Product, Invoice)
+        .join(Product, Statistic.product_id == Product.id)
+        .join(Invoice, Product.invoice_number == Invoice.number)
+        .where(Statistic.end.is_(False))
+    )
+    statistics = old_result.all()
+
+    product_inserts = []
+    statistic_inserts = []
+    for stat in statistics:
+        (stat_id,
+         stat_product_id,
+         sold_pieces,
+         sale_price,
+         total_standard_revenue,
+         lost_pieces,
+         lost_money,
+         remaining_pieces,
+         promotion_pieces,
+         promotion_price,
+         total_promotion_revenue,
+         price_change,
+         stat_end,
+         product_id,
+         product_invoice_number,
+         name,
+         quantity,
+         purchase_price,
+         product_end,
+         invoice_number,
+         date,
+         delivery_cost) = stat
+
+        existing_invoice = await new_conn.execute(
+            select(Invoice)
+            .where(
+                Invoice.number == invoice_number,
+                Invoice.invoice_date == date
+            )
+        )
+        existing_invoice = existing_invoice.scalar_one_or_none()
+        # Insert Invoice
+        if existing_invoice is None:
+            await new_conn.execute(
+                insert(Invoice)
+                .values(
+                    number=invoice_number,
+                    invoice_date=date,
+                    delivery_cost=delivery_cost
+                )
+            )
+            new_conn.commit()
+
+        # Insert Product
+        product_inserts.append({
+            'id': product_id,
+            'invoice_number': invoice_number,
+            'name': name,
+            'quantity': quantity,
+            'purchase_price': purchase_price,
+            'end': product_end
+        })
+
+        # Insert Statistic
+        statistic_inserts.append({
+            'id': stat_id,
+            'product_id': stat_product_id,
+            'sold_pieces': sold_pieces,
+            'sale_price': sale_price,
+            'total_standard_revenue': total_standard_revenue,
+            'lost_pieces': lost_pieces,
+            'lost_money': lost_money,
+            'remaining_pieces': remaining_pieces,
+            'promotion_pieces': promotion_pieces,
+            'promotion_price': promotion_price,
+            'total_promotion_revenue': total_promotion_revenue,
+            'price_change': price_change,
+            'end': stat_end
+        })
+
+    if product_inserts:
+        await new_conn.execute(insert(Product), product_inserts)
+    if statistic_inserts:
+        await new_conn.execute(insert(Statistic), statistic_inserts)
+
+    await new_conn.commit()
+
+    return True
 
 # Invoice
-async def insert_invoice(session: AsyncSession, number: int, date: date, cost: float):
-    stmt = insert(Invoice).values(number=number, date=date, delivery_cost=cost)
-    await session.execute(stmt)
+async def insert_invoice(session: AsyncSession, invoice_number: int, date: date, cost: float):
+    existing_invoice = await session.execute(
+        select(Invoice)
+        .where(Invoice.number == invoice_number, Invoice.invoice_date == date)
+    )
+    if existing_invoice.scalar() is None:
+        await session.execute(
+            insert(Invoice)
+            .values(number=invoice_number, invoice_date=date, delivery_cost=cost)
+        )
+        await session.commit()
+
+# ==============================================================================================================
+# ДЛЯ ДРУГИХ ТРАТ
+# ==============================================================================================================
+
+async def get_expenses_data(
+        session: AsyncSession
+):
+    result = await session.execute(select(OtherExpense))
+    return result.scalars().all()
+
+async def get_expence_spent(
+      session: AsyncSession,
+      expence_id: int  
+):
+    result = await session.execute(
+        select(OtherExpense.spent)
+        .where(OtherExpense.id == expence_id)
+    )
+
+    return result.scalar()
+
+async def add_other_expense(
+        session: AsyncSession,
+        expense_id: int,
+        expense_name: int,
+        additional_spent: int
+):
+    # добавляем к существующей трате
+    if expense_name is None:
+        spent = await get_expence_spent(session, expense_id)
+        spent += additional_spent
+
+        result = await session.execute(
+            update(OtherExpense)
+            .where(OtherExpense.id == expense_id)
+            .values(
+                spent=spent
+            )
+            .returning(OtherExpense.name)
+        )
+        expense_name = result.scalar()
+    # Создаем новую трату
+    else:
+        result = await session.execute(
+            insert(OtherExpense)
+            .values(
+                name=expense_name,
+                spent=additional_spent,
+            )
+            .returning(OtherExpense.id)
+        )
+        expense_id = result.scalar()
+        spent = additional_spent
+
     await session.commit()
+    return expense_id, expense_name, spent
 
 # Product
 async def insert_product(session: AsyncSession, invoice_number: int, name: str, quantity: int, purchase_price: float):
-    stmt = insert(Product).values(invoice_number=invoice_number, name=name, quantity=quantity, purchase_price=purchase_price)
-    await session.execute(stmt)
+    result = await session.execute(
+        insert(Product)
+        .values(
+            invoice_number=invoice_number,
+            name=name,
+            quantity=quantity,
+            purchase_price=purchase_price
+        )
+        .returning(Product.id)
+    )
     await session.commit()
+
+    return result.scalar()
 
 async def get_product_names(session: AsyncSession, is_promotion: bool = False):
     if is_promotion:
-        stmt = (select(Product.id, Product.name, Invoice.date, Statistic.remaining_pieces, Statistic.lost_pieces)
+        stmt = (
+            select(
+                Product.id,
+                Product.name,
+                Invoice.invoice_date,
+                Statistic.remaining_pieces,
+                Statistic.lost_pieces,
+                Statistic.sale_price,
+                Statistic.promotion_price
+            )
                 .join(Invoice, Product.invoice_number == Invoice.number)
                 .join(Statistic, Statistic.product_id == Product.id)
                 .where(and_(Statistic.end.is_(False), Statistic.promotion_price != 0))
         )
     else:
-        stmt = (select(Product.id, Product.name, Invoice.date, Statistic.remaining_pieces, Statistic.lost_pieces)
+        stmt = (
+            select(
+                Product.id,
+                Product.name,
+                Invoice.invoice_date,
+                Statistic.remaining_pieces,
+                Statistic.lost_pieces,
+                Statistic.sale_price,
+                Statistic.promotion_price
+            )
                 .join(Invoice, Product.invoice_number == Invoice.number)
                 .join(Statistic, Statistic.product_id == Product.id)
                 .where(Statistic.end.is_(False))
@@ -37,15 +241,20 @@ async def get_product_names(session: AsyncSession, is_promotion: bool = False):
         "name":row[1].lower(),
         "date":row[2],
         "remaining_pieces":row[3],
-        "lost_pieces": row[4]
+        "lost_pieces": row[4],
+        "sale_price": row[5],
+        "promotion_price": row[6]
         }
         for row in result.fetchall()
     ]
 
-async def get_product_id(session: AsyncSession, name: str, invoice_number: int):
-    stmt = select(Product.id).where(Product.name == name, Product.invoice_number == invoice_number)
-    result = await session.execute(stmt)
-
+async def get_product_name(session: AsyncSession, product_id: int):
+    result = await session.execute(
+        select(Product.name)
+        .where(
+            Product.id == product_id
+        )
+    )
     return result.scalar_one_or_none()
 
 async def get_product_remaining(session: AsyncSession, product_id: int):
@@ -81,96 +290,64 @@ async def get_product_promotion_pieces(session: AsyncSession, product_id: int):
 
 async def update_product_revenue(
         session: AsyncSession,
-        data: tuple,
-        product_ids: list[int]
+        product_id: int,
+        remaining_pieces: int,
+        quantity: int
+
 ):
-    product_id, quantity = data
-    if product_id not in product_ids:
-        return False, ("Не вышло! Выберите данные из предложенного списка. "
-                       "Попробуйте заново, или введите /cancel.")
-    result = await get_product_remaining(session, product_id)
-    if result is not None:
-        remaining_pieces, = result
-        print(remaining_pieces)
-        if remaining_pieces >= quantity:
-            sold_pieces, sale_price = await get_product_sold_pieces(session, product_id)
-            sold_pieces += quantity
-            total_standard_revenue = sold_pieces * sale_price
-            remaining_pieces -= quantity
-            end = True if remaining_pieces == 0 else False
+    sold_pieces, sale_price = await get_product_sold_pieces(session, product_id)
+    sold_pieces += quantity
+    total_standard_revenue = sold_pieces * sale_price
+    remaining_pieces -= quantity
+    end = True if remaining_pieces == 0 else False
 
-            stat_stmt = (
-                update(Statistic)
-                .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                .values(sold_pieces=sold_pieces,
-                        total_standard_revenue=total_standard_revenue,
-                        remaining_pieces=remaining_pieces,
-                        end=end)
-            )
-            product_stmt = (
-                update(Product)
-                .where(Product.id == product_id)
-                .values(end=end)
-            )
-            await session.execute(stat_stmt)
-            await session.execute(product_stmt)
-            await session.commit()
+    result = await session.execute(
+        update(Statistic)
+        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+        .values(sold_pieces=sold_pieces,
+                total_standard_revenue=total_standard_revenue,
+                remaining_pieces=remaining_pieces,
+                end=end)
+        .returning(Statistic.remaining_pieces)
+    )
+    await session.execute(
+        update(Product)
+        .where(Product.id == product_id)
+        .values(end=end)
+    )
+    await session.commit()
 
-            return True, "Данные успешно внесены."
-        else:
-            return False, ("Не вышло! Вы хотите продать больше товара, чем есть, "
-                           "попробуйте заново, или введите /cancel.")
-    else:
-        return False, ("Не вышло! Идентификатор товара не существует, "
-                        "попробуйте заново, или нажмите /cancel.")
+    return result.scalar()
 
 async def update_product_promotion_revenue(
         session: AsyncSession,
-        data: tuple,
-        product_ids: list[int]
+        product_id: int,
+        remaining_pieces: int,
+        quantity: int
 ):
-    product_id, quantity = data
-    if product_id not in product_ids:
-        return False, ("Не вышло! Выберите данные из предложенного списка. "
-                       "Попробуйте заново, или введите /cancel.")
-    result = await get_product_remaining(session, product_id)
-    if result is not None:
-        remaining_pieces, = result
-        if remaining_pieces >= quantity:
-            promotion_pieces, promotion_price = await get_product_promotion_pieces(session, product_id)
-            if promotion_price == 0:
-                return False, ("Не вышло! Для этого товара не установлена акционная цена, "
-                               "попробуйте заново, или нажмите /cancel.")
-            else:
-                promotion_pieces += quantity
-                total_promotion_revenue = promotion_pieces * promotion_price
-                remaining_pieces -= quantity
-                end = True if remaining_pieces == 0 else False
+    promotion_pieces, promotion_price = await get_product_promotion_pieces(session, product_id)
+    promotion_pieces += quantity
+    total_promotion_revenue = promotion_pieces * promotion_price
+    remaining_pieces -= quantity
+    end = True if remaining_pieces == 0 else False
 
-                stat_stmt = (
-                    update(Statistic)
-                    .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                    .values(promotion_pieces=promotion_pieces,
-                            total_promotion_revenue=total_promotion_revenue,
-                            remaining_pieces=remaining_pieces,
-                            end=end)
-                )
-                product_stmt = (
-                    update(Product)
-                    .where(Product.id == product_id)
-                    .values(end=end)
-                )
-                await session.execute(stat_stmt)
-                await session.execute(product_stmt)
-                await session.commit()
+    result = await session.execute(
+        update(Statistic)
+        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+        .values(promotion_pieces=promotion_pieces,
+                total_promotion_revenue=total_promotion_revenue,
+                remaining_pieces=remaining_pieces,
+                end=end)
+        .returning(Statistic.remaining_pieces)
+    )
+    await session.execute(
+        update(Product)
+        .where(Product.id == product_id)
+        .values(end=end)
+    )
+    await session.commit()
 
-                return True, "Данные успешно внесены."
-        else:
-            return False, ("Не вышло! Вы хотите продать больше товара, чем есть, "
-                           "попробуйте заново, или введите /cancel.")
-    else:
-        return False, ("Не вышло! Идентификатор товара не существует, "
-                        "попробуйте заново, или нажмите /cancel.")
+    return result.scalar()
 
 # Statistic
 async def start_statistics(
@@ -187,238 +364,205 @@ async def start_statistics(
     await session.execute(stmt)
     await session.commit()
 
+# Добавление утиля
 async def get_trash_data(session: AsyncSession, product_id: int):
-    stmt = (
-        select(Statistic.lost_pieces, Statistic.lost_money, Product.purchase_price)
-        .join(Product, Product.id == Statistic.product_id)
+    result = await session.execute(
+        select(Product.purchase_price)
+        .join(Statistic, Statistic.product_id == Product.id)
         .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
     )
-    result = await session.execute(stmt)
 
-    row = result.fetchone()
-    if row:
-        return row
-    else:
-        # Не внесен приход
-        return None
-
+    return result.scalar()
 
 async def add_trash(
         session: AsyncSession,
-        data: list[tuple],
-        product_ids: list[int]
+        product_id: int,
+        lost_pieces: int,
+        quantity: int,
+        remaining_pieces: int
 ):
-    for trash_data in data:
-        product_id, _ = trash_data
-        print(product_ids)
-        if product_id not in product_ids:
-            return False, ("Не вышло! Выберите данные из предложенного списка. "
-                           "Попробуйте заново, или введите /cancel.")
-    for trash_data in data:
-        product_id, quantity = trash_data
-        result = await get_product_remaining(session, product_id)
-        if result is not None:
-            remaining_pieces, = result
-            if remaining_pieces >= quantity:
-                lost_pieces, _, purchase_price = await get_trash_data(session, product_id)
-                lost_pieces += quantity
-                lost_money = lost_pieces * purchase_price
-                remaining_pieces -= quantity
-                end = True if remaining_pieces == 0 else False
+    purchase_price = await get_trash_data(session, product_id)
+    lost_pieces += quantity
+    lost_money = lost_pieces * purchase_price
+    remaining_pieces -= quantity
+    end = True if remaining_pieces == 0 else False
 
-                stat_stmt = (
-                    update(Statistic)
-                    .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                    .values(lost_pieces=lost_pieces,
-                            lost_money=lost_money,
-                            remaining_pieces=remaining_pieces,
-                            end=end)
-                )
-                product_stmt = (
-                    update(Product)
-                    .where(Product.id == product_id)
-                    .values(end=end)
-                )
-
-                await session.execute(stat_stmt)
-                await session.execute(product_stmt)
-            else:
-                return False, ("Не вышло! Вы хотите внести утиля больше чем есть товара, "
-                            "попробуйте заново, или введите /cancel.")
-        else:
-            return False, ("Не вышло! Идентификатор товара не существует, "
-                            "попробуйте заново, или нажмите /cancel.")
+    result = await session.execute(
+        update(Statistic)
+        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+        .values(lost_pieces=lost_pieces,
+                lost_money=lost_money,
+                remaining_pieces=remaining_pieces,
+                end=end)
+        .returning(Statistic.lost_pieces)
+    )
+    await session.execute(
+        update(Product)
+        .where(Product.id == product_id)
+        .values(end=end)
+    )
     await session.commit()
 
-    return True, "Данные успешно внесены."
+    return result.scalar()
 
-async def get_stat_prices(
-        session: AsyncSession,
-        product_id: int
-):
-    stmt = (
-        select(Statistic.sale_price, Statistic.promotion_price)
-        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-    )
-    result = await session.execute(stmt)
-
-    row = result.fetchone()
-    if row:
-        return row
-    else:
-        # product_id не существует
-        return None
-
+# Изменение цены
 async def change_price(
         session: AsyncSession,
-        data: list[tuple],
+        product_id: int,
+        remaining_pieces: int,
         is_stnd_change_price: bool,
-        product_ids: list[int]
+        new_price: float
 ):
-    for changed_data in data:
-        product_id, _ = changed_data
-        if product_id not in product_ids:
-            return False, ("Не вышло! Выберите данные из предложенного списка. "
-                           "Попробуйте заново, или введите /cancel.")
-    for changed_data in data:
-        product_id, new_price = changed_data
-        sale_price, promotion_price = await get_stat_prices(session, product_id)
-        sold_pieces, _ = await get_product_sold_pieces(session, product_id)
-        promotion_pieces, _ = await get_product_promotion_pieces(session, product_id)
-        result = await get_product_remaining(session, product_id)
-        if result is not None:
-            if sold_pieces == 0 and promotion_pieces == 0:
-                if is_stnd_change_price:
-                    stmt = (
-                        update(Statistic)
-                        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                        .values(sale_price=new_price)
-                    )
-                else:
-                    stmt = (
-                        update(Statistic)
-                        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                        .values(promotion_price=new_price)
-                    )
-                await session.execute(stmt)
-            else:
-                stat_stmt = (
-                    update(Statistic)
-                    .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                    .values(remaining_pieces=0,
-                            price_change=True,
-                            end=True)
-                )
-                await session.execute(stat_stmt)
-
-                remaining_pieces, = result
-                if is_stnd_change_price:
-                    await start_statistics(
-                        session=session,
-                        product_id=product_id,
-                        sale_price=new_price,
-                        quantity=remaining_pieces,
-                        promotion_price=promotion_price
-                    )
-                else:
-                    await start_statistics(
-                        session=session,
-                        product_id=product_id,
-                        sale_price=sale_price,
-                        quantity=remaining_pieces,
-                        promotion_price=new_price
-                    )
+    sold_pieces, sale_price = await get_product_sold_pieces(session, product_id)
+    promotion_pieces, promotion_price = await get_product_promotion_pieces(session, product_id)
+    if sold_pieces == 0 and promotion_pieces == 0:
+        if is_stnd_change_price:
+            await session.execute(
+                update(Statistic)
+                .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+                .values(sale_price=new_price)
+            )
         else:
-            return False, ("Не вышло! Идентификатор товара не существует, "
-                            "попробуйте заново, или нажмите /cancel.")
+            await session.execute(
+                update(Statistic)
+                .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+                .values(promotion_price=new_price)
+            )
+    else:
+        await session.execute(
+            update(Statistic)
+            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+            .values(remaining_pieces=0,
+                    price_change=True,
+                    end=True)
+        )
+        if is_stnd_change_price:
+            await start_statistics(
+                session=session,
+                product_id=product_id,
+                sale_price=new_price,
+                quantity=remaining_pieces,
+                promotion_price=promotion_price
+            )
+        else:
+            await start_statistics(
+                session=session,
+                product_id=product_id,
+                sale_price=sale_price,
+                quantity=remaining_pieces,
+                promotion_price=new_price
+            )
     await session.commit()
 
-    return True, "Данные успешно внесены."
-
-# Composition
-async def get_next_composition_id(session: AsyncSession) -> int:
-    stmt = select(func.coalesce(func.max(Composition.composition_id), 0) + 1)
-    result = await session.execute(stmt)
-    return result.scalar()
+# Добавление композиции
+# async def get_next_composition_id(session: AsyncSession) -> int:
+#     stmt = select(func.coalesce(func.max(Composition.composition_id), 0) + 1)
+#     result = await session.execute(stmt)
+#     return result.scalar()
 
 async def insert_composition(
         session: AsyncSession,
-        data: list[tuple],
-        product_ids: list[int]
+        product_id: int,
+        is_trash: bool,
+        lost_pieces: int,
+        quantity: int,
+        sale_price: float,
+        remaining_pieces: int
 ):
-    composition_id = await get_next_composition_id(session)
-    print(session.get_transaction())
-    print(session.in_transaction())
-    async with session.begin():
-        # for sell_data in data:
-        #     _, product_id, _, _ = sell_data
-            # if product_id not in product_ids:
-            #     return False, ("Не вышло! Выберите данные из предложенного списка. "
-            #                 "Попробуйте заново, или введите /cancel.")
-        for sell_data in data:
-            is_trash, product_id, sold_pieces, sale_price = sell_data
-            if product_id not in product_ids:
-                return False, ("Не вышло! Выберите данные из предложенного списка. "
-                            "Попробуйте заново, или введите /cancel.")
-            if is_trash:
-                lost_pieces, _, purchase_price = await get_trash_data(session, product_id)
-                if lost_pieces >= sold_pieces:
-                    total_revenue = sold_pieces * sale_price
-                    lost_pieces -= sold_pieces
-                    lost_money = lost_pieces * purchase_price
+    if is_trash:
+        purchase_price = await get_trash_data(session, product_id)
+        total_revenue = quantity * sale_price
+        lost_pieces -= quantity
+        lost_money = lost_pieces * purchase_price
 
-                    composition_stmt = insert(Composition).values(composition_id=composition_id,
-                                                                    product_id=product_id,
-                                                                    sold_pieces=sold_pieces,
-                                                                    sale_price=sale_price,
-                                                                    total_revenue=total_revenue)
-                    stat_stmt = (
-                        update(Statistic)
-                        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                        .values(lost_pieces=lost_pieces,
-                                lost_money=lost_money)
-                    )
-                    await session.execute(stat_stmt)
-                    await session.execute(composition_stmt)
-                else:
-                    return False, ("Не вышло! Вы хотите продать больше утиля, чем есть, "
-                                    "попробуйте заново, или введите /cancel.")
-            else:
-                result = await get_product_remaining(session, product_id)
-                if result is not None:
-                    remaining_pieces, = result
-                    if remaining_pieces >= sold_pieces:
-                        total_revenue = sold_pieces * sale_price
-                        remaining_pieces -= sold_pieces
-                        end = True if remaining_pieces == 0 else False
-                        
-                        composition_stmt = insert(Composition).values(composition_id=composition_id,
-                                                                    product_id=product_id,
-                                                                    sold_pieces=sold_pieces,
-                                                                    sale_price=sale_price,
-                                                                    total_revenue=total_revenue)
-                        stat_stmt = (
-                            update(Statistic)
-                            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-                            .values(remaining_pieces=remaining_pieces,
-                                    end=end)
-                        )
-                        product_stmt = (
-                            update(Product)
-                            .where(Product.id == product_id)
-                            .values(end=end)
-                        )
-                        await session.execute(stat_stmt)
-                        await session.execute(product_stmt)
-                        await session.execute(composition_stmt)
-                    else:
-                        return False, ("Не вышло! Вы хотите продать больше товара, чем есть, "
-                                    "попробуйте заново, или введите /cancel.")
-                else:
-                    return False, ("Не вышло! Идентификатор товара не существует, "
-                                "попробуйте заново, или нажмите /cancel.")
-
-        # await session.commit()
-
-    return True, "Данные успешно внесены."
+        await session.execute(
+            insert(Composition)
+            .values(product_id=product_id,
+                    sold_pieces=quantity,
+                    sale_price=sale_price,
+                    total_revenue=total_revenue)
+        )
+        result = await session.execute(
+            update(Statistic)
+            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+            .values(lost_pieces=lost_pieces,
+                    lost_money=lost_money)
+            .returning(Statistic.lost_pieces)
+        )
+    else:
+        total_revenue = quantity * sale_price
+        remaining_pieces -= quantity
+        end = True if remaining_pieces == 0 else False
+        
+        await session.execute(
+            insert(Composition)
+            .values(
+                product_id=product_id,
+                sold_pieces=quantity,
+                sale_price=sale_price,
+                total_revenue=total_revenue
+            )
+        )
+        result = await session.execute(
+            update(Statistic)
+            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+            .values(remaining_pieces=remaining_pieces,
+                    end=end)
+            .returning(Statistic.remaining_pieces)
+        )
+        await session.execute(
+            update(Product)
+            .where(Product.id == product_id)
+            .values(end=end)
+        )
     
+    await session.commit()
+
+    return result.scalar()
+
+# ==============================================================================================================
+# ДЛЯ ОТЧЕТОВ
+# ==============================================================================================================
+
+async def get_total_revenues(session: AsyncSession):
+    subquery_statistics = select(
+        func.sum(Statistic.total_standard_revenue).label("total_standard"),
+        func.sum(Statistic.total_promotion_revenue).label("total_promotion")
+    ).subquery()
+
+    subquery_composition = select(
+        func.sum(Composition.total_revenue).label("total_composition")
+    ).subquery()
+
+    result = await session.execute(
+        select(
+            subquery_statistics.c.total_standard,
+            subquery_statistics.c.total_promotion,
+            subquery_composition.c.total_composition
+        )
+    )
+    totals = result.first()
+    return {
+        "total_standard_revenue": totals.total_standard or 0,
+        "total_promotion_revenue": totals.total_promotion or 0,
+        "total_composition_revenue": totals.total_composition or 0,
+    }
+
+async def get_purchase_expenses(session: AsyncSession):
+    subquery_lost_money = select(
+        func.sum(Statistic.lost_money).label("total_lost")
+    ).subquery()
+    subquery_purchase = select(
+        func.sum(Product.quantity * Product.purchase_price).label("total_purchase")
+    ).subquery()
+    result = await session.execute(
+        select(
+            subquery_lost_money.c.total_lost,
+            subquery_purchase.c.total_purchase
+        )
+    )
+    totals = result.first()
+    return {
+        "total_lost": totals.total_lost or 0,
+        "total_purchase": totals.total_purchase or 0,
+    }
