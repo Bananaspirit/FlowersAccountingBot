@@ -3,3 +3,5 @@ FlowersAccBotVenv
 __pycache__
 bot_users.db
 trash.py
+data.sqlite3
+users.sqlite3

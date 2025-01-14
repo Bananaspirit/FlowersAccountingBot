@@ -1,10 +1,14 @@
 from sqlalchemy.sql import func
-from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection, AsyncTransaction
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection
 from sqlalchemy import select, update, insert, and_
-from sqlalchemy.orm import selectinload, joinedload
 from .models import Invoice, Product, Statistic, Composition, MigrationStatus, OtherExpense
 from datetime import date, datetime
-from sqlalchemy.dialects.postgresql import dialect
+from typing import Union
+from collections import defaultdict
+
+# ==============================================================================================================
+# МИГРАЦИЯ ДАННЫХ
+# ==============================================================================================================
 
 async def is_migrations_ready(conn: AsyncConnection):
     result = await conn.execute(
@@ -21,7 +25,6 @@ async def mark_migrations_is_ready(conn: AsyncConnection):
     )
     await conn.commit()
 
-# Migrate data
 async def migrate_data(old_conn: AsyncConnection, new_conn: AsyncConnection):
     """
     Migrate data from a table in the old database to the new database.
@@ -116,7 +119,10 @@ async def migrate_data(old_conn: AsyncConnection, new_conn: AsyncConnection):
 
     return True
 
-# Invoice
+# ==============================================================================================================
+# ВНЕСЕНИЕ ПРИХОДА
+# ==============================================================================================================
+
 async def insert_invoice(session: AsyncSession, invoice_number: int, date: date, cost: float):
     existing_invoice = await session.execute(
         select(Invoice)
@@ -128,6 +134,45 @@ async def insert_invoice(session: AsyncSession, invoice_number: int, date: date,
             .values(number=invoice_number, invoice_date=date, delivery_cost=cost)
         )
         await session.commit()
+
+# ==============================================================================================================
+# ВЫВОД НАКЛАДНОЙ
+# ==============================================================================================================
+
+async def get_invoices(session: AsyncSession):
+    result = await session.execute(
+        select(
+            Invoice.number,
+            Invoice.invoice_date
+        )
+    )
+    invoices = defaultdict(list)
+    for number, date in result.fetchall():
+        invoices[number].append(date)
+    return invoices
+
+async def get_products_by_invoice(
+        session: Union[AsyncSession, AsyncConnection],
+        invoice_number: int,
+        date: date
+):
+    result = await session.execute(
+        select(
+            Product.name,
+            Product.quantity,
+            Product.purchase_price
+        )
+        .where(
+            Product.invoice_number == invoice_number,
+            Invoice.invoice_date == date
+        )
+        .join(
+            Invoice,
+            Invoice.number == invoice_number
+        )
+    )
+    return result.fetchall()
+
 
 # ==============================================================================================================
 # ДЛЯ ДРУГИХ ТРАТ
@@ -384,7 +429,6 @@ async def add_trash(
     purchase_price = await get_trash_data(session, product_id)
     lost_pieces += quantity
     lost_money = lost_pieces * purchase_price
-    remaining_pieces -= quantity
     end = True if remaining_pieces == 0 else False
 
     result = await session.execute(
@@ -463,62 +507,35 @@ async def change_price(
 async def insert_composition(
         session: AsyncSession,
         product_id: int,
-        is_trash: bool,
-        lost_pieces: int,
         quantity: int,
         sale_price: float,
         remaining_pieces: int
 ):
-    if is_trash:
-        purchase_price = await get_trash_data(session, product_id)
-        total_revenue = quantity * sale_price
-        lost_pieces -= quantity
-        lost_money = lost_pieces * purchase_price
-
-        await session.execute(
-            insert(Composition)
-            .values(product_id=product_id,
-                    sold_pieces=quantity,
-                    sale_price=sale_price,
-                    total_revenue=total_revenue)
-        )
-        result = await session.execute(
-            update(Statistic)
-            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-            .values(lost_pieces=lost_pieces,
-                    lost_money=lost_money)
-            .returning(Statistic.lost_pieces)
-        )
-    else:
-        total_revenue = quantity * sale_price
-        remaining_pieces -= quantity
-        end = True if remaining_pieces == 0 else False
-        
-        await session.execute(
-            insert(Composition)
-            .values(
-                product_id=product_id,
-                sold_pieces=quantity,
-                sale_price=sale_price,
-                total_revenue=total_revenue
-            )
-        )
-        result = await session.execute(
-            update(Statistic)
-            .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
-            .values(remaining_pieces=remaining_pieces,
-                    end=end)
-            .returning(Statistic.remaining_pieces)
-        )
-        await session.execute(
-            update(Product)
-            .where(Product.id == product_id)
-            .values(end=end)
-        )
+    total_revenue = quantity * sale_price
+    end = True if remaining_pieces == 0 else False
     
+    await session.execute(
+        insert(Composition)
+        .values(
+            product_id=product_id,
+            sold_pieces=quantity,
+            sale_price=sale_price,
+            total_revenue=total_revenue
+        )
+    )
+    await session.execute(
+        update(Statistic)
+        .where(and_(Statistic.product_id == product_id, Statistic.end.is_(False)))
+        .values(
+            remaining_pieces=remaining_pieces,
+            end=end)
+    )
+    await session.execute(
+        update(Product)
+        .where(Product.id == product_id)
+        .values(end=end)
+    )
     await session.commit()
-
-    return result.scalar()
 
 # ==============================================================================================================
 # ДЛЯ ОТЧЕТОВ

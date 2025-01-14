@@ -106,7 +106,7 @@ async def delete_user(callback: CallbackQuery, state: FSMContext, user_session: 
     await callback.answer()
     users = await urq.get_all_users_by_role(user_session, "seller")
     if users:
-        user_list = "\n".join([f"<b>Имя</b>: {user.name}, <b>Telegram ID</b>: <code>{user.tg_id}</code>" for user in users])
+        user_list = "\n".join([f"<b>Имя</b>: {user.full_name}, <b>Telegram ID</b>: <code>{user.tg_id}</code>" for user in users])
         await callback.message.answer(f"Список продавцов:\n{user_list}\n\n> Отправьте Telegram ID продавца.",
                                       reply_markup=sharedkb.cancel_action)
         await state.set_state(DeleteSeller.waiting_for_user_id)
@@ -208,7 +208,7 @@ async def delete_admin_state_pass(message: Message, state: FSMContext, user_sess
         await state.clear()
         users = await urq.get_all_users_by_role(user_session, "admin")
         if users:
-            user_list = "\n".join([f"<b>Имя</b>: {user.name}, <b>Telegram ID</b>: <code>{user.tg_id}</code>" for user in users])
+            user_list = "\n".join([f"<b>Имя</b>: {user.full_name}, <b>Telegram ID</b>: <code>{user.tg_id}</code>" for user in users])
             await message.answer(f"Список администраторов:\n{user_list}\n\nОтправьте Telegram ID администратора для удаления.",
                                  reply_markup=sharedkb.cancel_action)
             await state.set_state(DeleteAdmin.waiting_for_user_id)

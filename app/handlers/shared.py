@@ -66,14 +66,20 @@ async def create_first_admin(message: Message, state: FSMContext, user_session: 
                                                 key=StorageKey(bot_id=bot.id,
                                                                chat_id=user.tg_id,
                                                                user_id=user.tg_id))
-            await bot.send_message(user.tg_id, "📢 Процесс создания администратора отменен. "
-                                               "Один из пользователей уже стал администратором.")
+            await bot.send_message(user.tg_id,
+                                   "📢 Процесс создания администратора отменен. "
+                                   "Один из пользователей уже стал администратором.")
+            await bot.send_message(user.tg_id,
+                                   f"{user.first_name}, добро пожаловать!\n"
+                                   f"Нажмите на ваш id чтобы скопировать: <code>{user.tg_id}</code>.\n"
+                                   "<b>Сообщите его администратору для назначения вам роли</b>",
+                                   reply_markup=sharedkb.unknown_user)
             await state_with.clear()
 
         await rq.change_all_users_role(user_session, "first")
 
         await message.answer("📢 Вы стали первым администратором!",
-                            reply_markup=adminkb.head)
+                            reply_markup=sharedkb.reply_menu)
         await state.clear()
     else:
         await message.answer("⚠️ Неверный пароль",

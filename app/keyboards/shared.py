@@ -34,11 +34,30 @@ change_price_question = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Да", callback_data="change_price_yes")],
     [InlineKeyboardButton(text="Нет", callback_data="change_price_no")]])
 
+print_invoice_month = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="За текущий", callback_data="print_current_invoice")],
+    [InlineKeyboardButton(text="За другой", callback_data="print_previous_invoice")]])
+
+print_invoice_question = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Да", callback_data="print_invoice_yes")],
+        [InlineKeyboardButton(text="Нет", callback_data="print_invoice_no")]
+    ]
+)
+
+add_invoice_choice = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Добавить к существующей", callback_data="add_to_existing_invoice")],
+        [InlineKeyboardButton(text="Создать новую", callback_data="create_new_invoice")],
+        [InlineKeyboardButton(text="❌ Отменить действие", callback_data="cancel_action")]
+    ]
+)
+
 async def inline_admins(session):
     keyboard = InlineKeyboardBuilder()
     admins_list = await rq.get_list_of_admins(session)
     
-    for tg_id, name in admins_list.items():
-        keyboard.add(InlineKeyboardButton(text=name, url=f"tg://openmessage?user_id={tg_id}"))
+    for tg_id, full_name in admins_list.items():
+        keyboard.add(InlineKeyboardButton(text=full_name, url=f"tg://user?id={tg_id}"))
 
     return keyboard.adjust(2).as_markup()

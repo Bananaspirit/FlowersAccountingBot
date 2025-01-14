@@ -29,30 +29,30 @@ class AccessMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event: Union[Message, CallbackQuery], data: dict):
         tg_id = event.from_user.id
-        user_name = event.from_user.full_name
-
-        # user_session = await self.db_manager.get_user_session()
-        # data_session = await self.db_manager.get_data_session()
+        first_name = event.from_user.first_name
+        full_name = event.from_user.full_name
 
         data["db_manager"] = self.db_manager
         
         try:
-            # async with user_session.begin():
             async with await self.db_manager.get_user_session() as user_session:
                 if not await rq.get_list_of_admins(user_session):
                     if await rq.ensure_user_exist(user_session, tg_id) is None:
-                        await rq.add_unknown_user(user_session, tg_id, user_name)
+                        await rq.add_unknown_user(user_session, tg_id, first_name, full_name)
                         await rq.set_user_role(user_session, tg_id, "first")
                 else:
                     if await rq.ensure_user_exist(user_session, tg_id) is None:
-                        await rq.add_unknown_user(user_session, tg_id, user_name)
+                        await rq.add_unknown_user(user_session, tg_id, first_name, full_name)
 
                 user_role = await rq.get_user_role(user_session, tg_id)
 
+                user_info = await rq.get_user_info(user_session, tg_id)
+                if user_info.full_name != full_name:
+                    await rq.update_user_names(user_session, tg_id, first_name, full_name)
+
                 data['user_session'] = user_session
                 data['user_role'] = user_role
-        
-            # async with data_session.begin():
+
             async with await self.db_manager.get_data_session() as data_session:
                 data['data_session'] = data_session
                 

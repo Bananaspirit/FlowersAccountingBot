@@ -19,7 +19,8 @@ class User(UserBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
     tg_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
     role: Mapped[str] = mapped_column(Text, nullable=True)
-    name: Mapped[str] = mapped_column(Text, nullable=False)
+    first_name: Mapped[str] = mapped_column(Text, nullable=False)
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
 
 class MigrationStatus(DataBase):
     __tablename__ = 'migration_status'

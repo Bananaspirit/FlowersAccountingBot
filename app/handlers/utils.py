@@ -2,7 +2,7 @@ import asyncio
 from rapidfuzz import process
 from rapidfuzz import fuzz
 
-async def dynamic_search(keyword: str, products: list, min_similarity=90.0):
+async def dynamic_search(keyword: str, products: list, min_similarity=80.0):
     names = [product["name"] for product in products]
     loop = asyncio.get_event_loop()
     results = await loop.run_in_executor(None, lambda: process.extract(query=keyword.lower(),
@@ -37,3 +37,21 @@ async def dynamic_search(keyword: str, products: list, min_similarity=90.0):
                 seen_ids.add(match["id"])
 
     return enhanced_results
+
+def digit_to_emoji(input_number: int):
+    digit_to_emoji = {
+        "0": "0️⃣",
+        "1": "1️⃣",
+        "2": "2️⃣",
+        "3": "3️⃣",
+        "4": "4️⃣",
+        "5": "5️⃣",
+        "6": "6️⃣",
+        "7": "7️⃣",
+        "8": "8️⃣",
+        "9": "9️⃣",
+    }
+    input_str = str(input_number)
+    emoji_representation = "".join(digit_to_emoji[digit] for digit in input_str if digit in digit_to_emoji)
+
+    return emoji_representation

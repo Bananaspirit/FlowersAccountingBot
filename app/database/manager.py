@@ -51,18 +51,18 @@ class DatabaseManager:
         async with self.user_engine.begin() as conn:
             await conn.run_sync(UserBase.metadata.drop_all)
 
-    def get_data_db_path(self, previous = False) -> str:
+    def get_data_db_path(self, date = datetime.now(), previous_month = False, mkdir = True) -> str:
         """Generates the path to the database for the specified year and month."""
         
-        now = datetime.now()
-        if not previous:
-            year = str(now.year)
-            month = f"{now.strftime('%B')}"
+        if not previous_month:
+            year = str(date.year)
+            month = f"{date.strftime('%B')}"
 
             month_dir = os.path.join(self.data_base_dir, year, month)
-            os.makedirs(month_dir, exist_ok=True)
+            if mkdir:
+                os.makedirs(month_dir, exist_ok=True)
         else:
-            first_day_of_current_month = datetime(year=now.year, month=now.month, day=1)
+            first_day_of_current_month = datetime(year=date.year, month=date.month, day=1)
             last_day_of_previous_month = first_day_of_current_month - timedelta(days=1)
 
             year = str(last_day_of_previous_month.year)
@@ -91,7 +91,7 @@ class DatabaseManager:
         """Handles database migration when a new month begins."""
 
         new_data_db_path = self.get_data_db_path()
-        prev_data_db_path = self.get_data_db_path(previous=True)
+        prev_data_db_path = self.get_data_db_path(previous_month=True)
 
         # Migration logic
         if not self.database_exists(new_data_db_path):

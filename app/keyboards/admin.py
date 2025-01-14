@@ -16,10 +16,11 @@ user_management = InlineKeyboardMarkup(inline_keyboard=[
 
 shop_management = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🛒 Продать", callback_data="sell_choice")],
-    [InlineKeyboardButton(text="➕ Внести накладную", callback_data="add_invoice")],
+    [InlineKeyboardButton(text="🧾 Внести накладную", callback_data="add_invoice")],
     [InlineKeyboardButton(text="📝 Изменить цену", callback_data="change_price")],
-    [InlineKeyboardButton(text="🗑️ Добавить утиль", callback_data="add_trash")],
-    [InlineKeyboardButton(text="Добавить другие траты", callback_data="add_other_expenses")],
+    [InlineKeyboardButton(text="🗑️ Добавить брак", callback_data="add_trash")],
+    [InlineKeyboardButton(text="⚖️ Добавить другие траты", callback_data="add_other_expenses")],
+    [InlineKeyboardButton(text="🧾 Вывести накладную", callback_data="print_invoice")],
     [InlineKeyboardButton(text="◀️ Назад", callback_data="shop_management_back")]])
 
 change_price_choice = InlineKeyboardMarkup(inline_keyboard=[

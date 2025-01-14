@@ -11,10 +11,7 @@ from access_middleware import AccessMiddleware
 from app.database.manager import DatabaseManager
 from app.handlers.admin import admin_router
 from app.handlers.shared import shared_router, role_router
-from app.handlers.add_invoice import invoice_router, other_expenses_router
-from app.handlers.sell import sell_router
-from app.handlers.change_price_add_trash import change_price_router, add_trash_router
-from app.handlers.monthly_report import monthly_report_router
+from app.handlers.shop_managment import shop_managment_router
 
 dp = Dispatcher(storage=MemoryStorage())
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -50,12 +47,7 @@ async def main():
     dp.include_router(admin_router)
     dp.include_router(role_router)
     dp.include_router(shared_router)
-    dp.include_router(invoice_router)
-    dp.include_router(sell_router)
-    dp.include_router(change_price_router)
-    dp.include_router(add_trash_router)
-    dp.include_router(other_expenses_router)
-    dp.include_router(monthly_report_router)
+    dp.include_router(shop_managment_router)
 
     dp.message.middleware(AccessMiddleware(db_manager))
     dp.callback_query.middleware(AccessMiddleware(db_manager))
